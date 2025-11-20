@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Custom Data Organizer
  * Description:       Group selected custom post types under a single "Custom Data" admin menu.
- * Version:           1.1.0
+ * Version:           1.2.0
  * Author:            SpecNet
  * Text Domain:       custom-data-organizer
  */
