@@ -1,27 +1,33 @@
 <?php
 
-if ( ! defined( 'ABSPATH' ) ) exit;
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
 
 /**
- * Custom Data Organizer (SCF/ACF compatible)
+ * Custom Data Organizer
  *
- * Moves all non-core CPTs under:
+ * - Adds a "Custom Data" top-level menu.
+ * - Lets you choose which custom post types to group under it.
+ * - Selected CPTs are removed from the main admin menu and only shown under "Custom Data":
  *
- * Custom Data
- *   Accommodations
- *     – View All Accommodations
- *     – Add Accommodation
- *     – Categories
- *   Destinations
- *     – View All Destinations
- *     – Add Destination
- *     – Categories
- *   ...
+ *   Custom Data
+ *      Accommodations
+ *          – Add Accommodations
+ *          – Taxonomies
+ *      Destinations
+ *          – Add Destinations
+ *          – Taxonomies
+ *      ...
  */
 class CDO_Admin_Menu {
 
+    const OPTION_KEY  = 'cdo_managed_post_types';
+    const PARENT_SLUG = 'cdo-main';
+
     /**
-     * Core post types we NEVER touch.
+     * Core post types we never touch.
+     * (Safety list even though we only manage custom CPTs.)
      */
     protected $core_post_types = [
         'post',
@@ -41,177 +47,256 @@ class CDO_Admin_Menu {
     ];
 
     public function __construct() {
-        // Register menu UI.
-        add_action( 'admin_menu', [ $this, 'register_menu' ], 99 );
-
-        // Force all CPTs (non-core) to show under our Custom Data menu,
-        // and NOT as their own top-level menu.
-        add_filter( 'register_post_type_args', [ $this, 'attach_cpts_to_custom_data_menu' ], 20, 2 );
+        add_action( 'admin_menu', [ $this, 'register_menus' ], 20 );
+        add_filter( 'register_post_type_args', [ $this, 'filter_post_type_args' ], 20, 2 );
     }
 
     /**
-     * Parent "Custom Data" menu + all CPT submenus.
+     * Get the list of CPT slugs that should be grouped under "Custom Data".
+     *
+     * @return string[]
      */
-    public function register_menu() {
+    public static function get_managed_post_types() : array {
+        $managed = get_option( self::OPTION_KEY, [] );
 
+        if ( ! is_array( $managed ) ) {
+            $managed = [];
+        }
+
+        $managed = array_map( 'sanitize_key', $managed );
+        $managed = array_unique( $managed );
+
+        return $managed;
+    }
+
+    /**
+     * Register:
+     * - top-level "Custom Data" menu
+     * - Overview page
+     * - Settings page
+     * - one group of submenus per managed CPT
+     */
+    public function register_menus() {
+
+        // Parent "Custom Data" menu.
         add_menu_page(
             __( 'Custom Data', 'custom-data-organizer' ),
             __( 'Custom Data', 'custom-data-organizer' ),
-            'edit_posts',
-            'cdo-main',
-            [ $this, 'render_overview' ],
+            'manage_options',
+            self::PARENT_SLUG,
+            [ $this, 'render_overview_page' ],
             'dashicons-index-card',
-            55
+            30
         );
 
+        // Overview submenu (same slug as parent).
         add_submenu_page(
-            'cdo-main',
+            self::PARENT_SLUG,
             __( 'Overview', 'custom-data-organizer' ),
             __( 'Overview', 'custom-data-organizer' ),
-            'edit_posts',
-            'cdo-main',
-            [ $this, 'render_overview' ]
+            'manage_options',
+            self::PARENT_SLUG,
+            [ $this, 'render_overview_page' ]
         );
 
-        // Build the per-CPT groups.
-        $post_types = get_post_types(
-            [
-                '_builtin' => false,
-                'show_ui'  => true,
-            ],
-            'objects'
+        // Settings page.
+        add_submenu_page(
+            self::PARENT_SLUG,
+            __( 'Custom Data Organizer Settings', 'custom-data-organizer' ),
+            __( 'Settings', 'custom-data-organizer' ),
+            'manage_options',
+            'cdo-settings',
+            [ $this, 'render_settings_page' ]
         );
 
-        if ( empty( $post_types ) ) {
+        // Now add submenus for each CPT that has been selected.
+        $managed = self::get_managed_post_types();
+
+        if ( empty( $managed ) ) {
             return;
         }
 
-        foreach ( $post_types as $post_type ) {
-
-            // Skip the internal ACF/SCF admin types.
-            if ( strpos( $post_type->name, 'acf-' ) === 0 ) {
+        foreach ( $managed as $post_type ) {
+            $pt_obj = get_post_type_object( $post_type );
+            if ( ! $pt_obj ) {
                 continue;
             }
 
-            $this->add_cpt_menu_group( $post_type );
+            // Skip core types for safety.
+            if ( in_array( $post_type, $this->core_post_types, true ) ) {
+                continue;
+            }
+
+            $this->add_cpt_group( $pt_obj );
         }
     }
 
     /**
-     * For each CPT:
-     *  - {Menu Name}           -> View All
-     *  - — Add {Singular}
-     *  - — Categories          -> first taxonomy (if any)
+     * For a single CPT, add:
+     *  - {Menu Name}          → View all
+     *  - — Add {Menu Name}    → Add new
+     *  - — Taxonomies         → First taxonomy, if present
      *
-     * @param WP_Post_Type $post_type
+     * @param WP_Post_Type $pt_obj
      */
-    protected function add_cpt_menu_group( $post_type ) {
+    protected function add_cpt_group( $pt_obj ) {
 
-        $pt        = $post_type->name;
-        $plural    = $post_type->labels->name;
-        $menu_name = $post_type->labels->menu_name ?: $plural;
-        $singular  = $post_type->labels->singular_name ?: rtrim( $menu_name, 's' );
-        $cap       = $post_type->cap->edit_posts ?? 'edit_posts';
+        $slug       = $pt_obj->name;
+        $plural     = $pt_obj->labels->menu_name ?: $pt_obj->labels->name ?: ucfirst( $slug );
+        $cap_edit   = $pt_obj->cap->edit_posts ?? 'edit_posts';
+        $cap_create = $pt_obj->cap->create_posts ?? $cap_edit;
 
-        // 1) View All {Plural}  (main entry)
+        // 1) View all – main entry for this CPT.
         add_submenu_page(
-            'cdo-main',
+            self::PARENT_SLUG,
             sprintf( __( 'View All %s', 'custom-data-organizer' ), $plural ),
-            $menu_name,
-            $cap,
-            'cdo-view-' . $pt,
-            function() use ( $pt ) {
-                wp_safe_redirect( admin_url( 'edit.php?post_type=' . $pt ) );
-                exit;
-            }
+            $plural,
+            $cap_edit,
+            'edit.php?post_type=' . $slug
         );
 
-        // 2) Add {Singular}
+        // 2) Add new – visually indented using "— ".
         add_submenu_page(
-            'cdo-main',
-            sprintf( __( 'Add %s', 'custom-data-organizer' ), $singular ),
-            '— ' . sprintf( __( 'Add %s', 'custom-data-organizer' ), $singular ),
-            $cap,
-            'cdo-add-' . $pt,
-            function() use ( $pt ) {
-                wp_safe_redirect( admin_url( 'post-new.php?post_type=' . $pt ) );
-                exit;
-            }
+            self::PARENT_SLUG,
+            sprintf( __( 'Add %s', 'custom-data-organizer' ), $plural ),
+            '— ' . sprintf( __( 'Add %s', 'custom-data-organizer' ), $plural ),
+            $cap_create,
+            'post-new.php?post_type=' . $slug
         );
 
-        // 3) Categories (Taxonomies) – if any exist for this CPT.
-        $taxonomies = get_object_taxonomies( $pt, 'objects' );
+        // 3) Taxonomies – first taxonomy associated with this CPT (if any).
+        $taxonomies = get_object_taxonomies( $slug, 'objects' );
 
         if ( ! empty( $taxonomies ) ) {
-
             $taxonomy = reset( $taxonomies );
 
             add_submenu_page(
-                'cdo-main',
-                sprintf( __( 'Categories (%s)', 'custom-data-organizer' ), $menu_name ),
+                self::PARENT_SLUG,
+                sprintf( __( '%s Taxonomies', 'custom-data-organizer' ), $plural ),
                 '— ' . __( 'Categories', 'custom-data-organizer' ),
                 'manage_categories',
-                'cdo-tax-' . $pt,
-                function() use ( $taxonomy, $pt ) {
-                    $url = admin_url(
-                        'edit-tags.php?taxonomy=' . $taxonomy->name . '&post_type=' . $pt
-                    );
-                    wp_safe_redirect( $url );
-                    exit;
-                }
+                'edit-tags.php?taxonomy=' . $taxonomy->name . '&post_type=' . $slug
             );
         }
     }
 
     /**
-     * Filter CPT registration so that any non-core CPT's menu appears
-     * ONLY under our "Custom Data" menu and not as a separate parent item.
-     *
-     * @param array  $args
-     * @param string $post_type
-     *
-     * @return array
+     * Ensure selected CPTs do NOT appear as top-level menus,
+     * but only under our "Custom Data" parent.
      */
-    public function attach_cpts_to_custom_data_menu( $args, $post_type ) {
+    public function filter_post_type_args( array $args, string $post_type ) : array {
 
-        // Skip core post types.
-        if ( in_array( $post_type, $this->core_post_types, true ) ) {
+        $managed = self::get_managed_post_types();
+
+        if ( ! in_array( $post_type, $managed, true ) ) {
+            // Not one of the CPTs we've chosen -> leave it alone.
             return $args;
         }
 
-        // Skip internal ACF/SCF admin types.
-        if ( strpos( $post_type, 'acf-' ) === 0 ) {
+        // Do not interfere with built-in types.
+        if ( ! empty( $args['_builtin'] ) ) {
             return $args;
         }
 
-        // If another plugin intentionally hides it, respect that.
+        // If some plugin explicitly hides this CPT, respect that.
         if ( isset( $args['show_in_menu'] ) && $args['show_in_menu'] === false ) {
             return $args;
         }
 
-        // For any CPT that WOULD have its own menu, move it under our menu.
-        // (true means default "own menu", so we override that too.)
-        if ( ! isset( $args['show_in_menu'] ) || $args['show_in_menu'] === true || $args['show_in_menu'] === 'edit.php?post_type=' . $post_type ) {
-            $args['show_in_menu'] = 'cdo-main';
-        }
+        /**
+         * Any CPT we are managing should show under our menu slug,
+         * not as its own top-level menu.
+         */
+        $args['show_in_menu'] = self::PARENT_SLUG;
 
         return $args;
     }
 
     /**
-     * Simple overview page so you know what's going on.
+     * Overview page under "Custom Data".
      */
-    public function render_overview() {
+    public function render_overview_page() {
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e( 'Custom Data Organizer', 'custom-data-organizer' ); ?></h1>
+            <p><?php esc_html_e( 'This menu groups selected custom post types into a single, tidy "Custom Data" menu.', 'custom-data-organizer' ); ?></p>
+            <p>
+                <?php
+                printf(
+                    esc_html__( 'To choose which post types appear here, go to %sSettings → Custom Data Organizer%s.', 'custom-data-organizer' ),
+                    '<a href="' . esc_url( admin_url( 'admin.php?page=cdo-settings' ) ) . '">',
+                    '</a>'
+                );
+                ?>
+            </p>
+        </div>
+        <?php
+    }
 
-        echo '<div class="wrap">';
-        echo '<h1>' . esc_html__( 'Custom Data Organizer', 'custom-data-organizer' ) . '</h1>';
-        echo '<p>' . esc_html__( 'All custom post types are grouped under the “Custom Data” menu. Each type gets:', 'custom-data-organizer' ) . '</p>';
-        echo '<ul style="list-style: disc; margin-left: 20px;">';
-        echo '<li>' . esc_html__( 'Main entry → View All {Plural}', 'custom-data-organizer' ) . '</li>';
-        echo '<li>' . esc_html__( 'Indented entry → Add {Singular}', 'custom-data-organizer' ) . '</li>';
-        echo '<li>' . esc_html__( 'Indented entry → Categories (first taxonomy attached to that type)', 'custom-data-organizer' ) . '</li>';
-        echo '</ul>';
+    /**
+     * Settings page: choose which CPTs to manage.
+     */
+    public function render_settings_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
 
-        echo '</div>';
+        // Handle save.
+        if ( isset( $_POST['cdo_nonce'] ) && wp_verify_nonce( $_POST['cdo_nonce'], 'cdo_save_settings' ) ) {
+            $selected = isset( $_POST['cdo_post_types'] ) ? (array) $_POST['cdo_post_types'] : [];
+            $selected = array_map( 'sanitize_key', $selected );
+            update_option( self::OPTION_KEY, $selected );
+
+            echo '<div class="updated notice"><p>' . esc_html__( 'Settings saved.', 'custom-data-organizer' ) . '</p></div>';
+        }
+
+        // Candidate CPTs: public, non-builtin.
+        $post_types = get_post_types(
+            [
+                'public'   => true,
+                '_builtin' => false,
+            ],
+            'objects'
+        );
+
+        $managed = self::get_managed_post_types();
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e( 'Custom Data Organizer Settings', 'custom-data-organizer' ); ?></h1>
+            <p><?php esc_html_e( 'Select the custom post types you want grouped under the "Custom Data" menu.', 'custom-data-organizer' ); ?></p>
+
+            <form method="post">
+                <?php wp_nonce_field( 'cdo_save_settings', 'cdo_nonce' ); ?>
+
+                <?php if ( empty( $post_types ) ) : ?>
+                    <p><?php esc_html_e( 'No custom post types found.', 'custom-data-organizer' ); ?></p>
+                <?php else : ?>
+                    <table class="form-table">
+                        <tbody>
+                        <?php foreach ( $post_types as $slug => $pt_obj ) : ?>
+                            <tr>
+                                <th scope="row">
+                                    <?php echo esc_html( $pt_obj->labels->name ); ?>
+                                </th>
+                                <td>
+                                    <label>
+                                        <input type="checkbox"
+                                               name="cdo_post_types[]"
+                                               value="<?php echo esc_attr( $slug ); ?>"
+                                            <?php checked( in_array( $slug, $managed, true ) ); ?>
+                                        />
+                                        <code><?php echo esc_html( $slug ); ?></code>
+                                    </label>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+
+                <?php submit_button(); ?>
+            </form>
+        </div>
+        <?php
     }
 }
