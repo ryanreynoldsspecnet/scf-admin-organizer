@@ -269,14 +269,17 @@ class CDO_Admin_Menu {
      * Overview page.
      */
     public function render_overview_page() {
+        $overview_message = __( 'This plugin groups selected custom post types under a single "Custom Data" menu for a cleaner admin experience.', 'custom-data-organizer' );
+        $overview_cta      = __( 'Use the %1$sData Types%2$s page to see a list of your custom data types, or adjust which types appear here in %3$sSettings%4$s.', 'custom-data-organizer' );
+
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Custom Data Organizer', 'custom-data-organizer' ); ?></h1>
-            <p><?php esc_html_e( 'This plugin groups selected custom post types under a single "Custom Data" menu for a cleaner admin experience.', 'custom-data-organizer' ); ?></p>
+            <p><?php echo esc_html( $overview_message ); ?></p>
             <p>
                 <?php
                 printf(
-                    esc_html__( 'Use the %1$sData Types%2$s page to see a list of your custom data types, or adjust which types appear here in %3$sSettings%4$s.', 'custom-data-organizer' ),
+                    esc_html( $overview_cta ),
                     '<a href="' . esc_url( admin_url( 'admin.php?page=cdo-data-types' ) ) . '">',
                     '</a>',
                     '<a href="' . esc_url( admin_url( 'admin.php?page=cdo-settings' ) ) . '">',
@@ -296,15 +299,17 @@ class CDO_Admin_Menu {
             return;
         }
 
-        $managed = self::get_managed_post_types();
+        $managed          = self::get_managed_post_types();
+        $data_types_intro = __( 'These are the custom post types currently grouped under the "Custom Data" menu.', 'custom-data-organizer' );
+        $no_data_types    = __( 'No data types selected yet. Go to Settings and choose which post types to manage.', 'custom-data-organizer' );
 
         ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'Custom Data Types', 'custom-data-organizer' ); ?></h1>
-            <p><?php esc_html_e( 'These are the custom post types currently grouped under the "Custom Data" menu.', 'custom-data-organizer' ); ?></p>
+            <p><?php echo esc_html( $data_types_intro ); ?></p>
 
             <?php if ( empty( $managed ) ) : ?>
-                <p><?php esc_html_e( 'No data types selected yet. Go to Settings and choose which post types to manage.', 'custom-data-organizer' ); ?></p>
+                <p><?php echo esc_html( $no_data_types ); ?></p>
             <?php else : ?>
                 <table class="widefat fixed striped">
                     <thead>
